@@ -6,13 +6,9 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-	"path"
 
 	"github.com/Azure/aks-engine/pkg/api"
 	"github.com/Azure/aks-engine/pkg/armhelpers"
@@ -20,7 +16,6 @@ import (
 	"github.com/Azure/aks-engine/pkg/engine/transform"
 	"github.com/Azure/aks-engine/pkg/helpers"
 	"github.com/Azure/aks-engine/pkg/i18n"
-	"github.com/Azure/aks-engine/pkg/operations"
 	"github.com/leonelquinteros/gotext"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -29,7 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-type addPoolCmd struct {
+type generateAddPoolCmd struct {
 	authArgs
 
 	// user input
@@ -37,7 +32,7 @@ type addPoolCmd struct {
 	resourceGroupName string
 	agentPoolPath     string
 	location          string
-	generate bool
+	noPrettyPrint     bool
 	outputDirectory   string // can be auto-determined from clusterDefinition
 
 	// derived
@@ -55,39 +50,39 @@ type addPoolCmd struct {
 }
 
 const (
-	addPoolName             = "addpool"
-	addPoolShortDescription = "Add an agent pool to an existing Kubernetes cluster"
-	addPoolLongDescription  = "Add an agent pool to an existing Kubernetes cluster by referencing a new agent pool spec"
+	generateAddPoolName             = "generate-addpool"
+	generateAddPoolShortDescription = "Generate template files to add an agent pool to an existing Kubernetes cluster"
+	generateAddPoolLongDescription  = "Generate template files to add an agent pool to an existing Kubernetes cluster by referencing a new agent pool spec"
 	//	apiModelFilename        = "apimodel.json"
-	agentPoolFilename = "agentpool.json"
+	// agentPoolFileName = "agentpool.json"
 )
 
-// newAddPoolCmd run a command to add an agent pool to a Kubernetes cluster
-func newAddPoolCmd() *cobra.Command {
-	apc := addPoolCmd{}
+// newgenerateAddPoolCmd run a command to add an agent pool to a Kubernetes cluster
+func newGenerateAddPoolCmd() *cobra.Command {
+	apc := generateAddPoolCmd{}
 
-	addPoolCmd := &cobra.Command{
-		Use:   addPoolName,
-		Short: addPoolShortDescription,
-		Long:  addPoolLongDescription,
+	generateAddPoolCmd := &cobra.Command{
+		Use:   generateAddPoolName,
+		Short: generateAddPoolShortDescription,
+		Long:  generateAddPoolLongDescription,
 		RunE:  apc.run,
 	}
 
-	f := addPoolCmd.Flags()
+	f := generateAddPoolCmd.Flags()
 	f.StringVarP(&apc.location, "location", "l", "", "location the cluster is deployed in")
 	f.StringVarP(&apc.resourceGroupName, "resource-group", "g", "", "the resource group where the cluster is deployed")
 	f.StringVarP(&apc.apiModelPath, "api-model", "m", "", "path to the generated apimodel.json file")
 	f.StringVarP(&apc.agentPoolPath, "agent-pool", "p", "", "path to the generated agentpool.json file")
-	f.BoolVar(&apc.generate, "generate", false, "skip deploy and generate  Azure Resource Manager template, parameters files")
+	f.BoolVar(&apc.noPrettyPrint, "no-pretty-print", false, "skip pretty printing the output")
 	f.StringVarP(&apc.outputDirectory, "output-directory", "o", "", "output directory (derived from FQDN if absent)")
 
 	addAuthFlags(&apc.authArgs, f)
 
-	return addPoolCmd
+	return generateAddPoolCmd
 }
 
-func (apc *addPoolCmd) validate(cmd *cobra.Command) error {
-	log.Debugln("validating addpool command line arguments...")
+func (apc *generateAddPoolCmd) validate(cmd *cobra.Command) error {
+	log.Debugln("validating generate-addpool command line arguments...")
 	var err error
 
 	apc.locale, err = i18n.LoadTranslations()
@@ -116,15 +111,10 @@ func (apc *addPoolCmd) validate(cmd *cobra.Command) error {
 		cmd.Usage()
 		return errors.New("--agentpool must be specified")
 	}
-
-	if apc.outputDirectory != "" && !apc.generate {
-		cmd.Usage()
-		return errors.New("--output-directory not valid without --generate")
-	}
 	return nil
 }
 
-func (apc *addPoolCmd) load() error {
+func (apc *generateAddPoolCmd) load() error {
 	logger := log.New()
 	logger.Formatter = new(prefixed.TextFormatter)
 	apc.logger = log.NewEntry(log.New())
@@ -186,7 +176,7 @@ func (apc *addPoolCmd) load() error {
 	return nil
 }
 
-func (apc *addPoolCmd) run(cmd *cobra.Command, args []string) error {
+func (apc *generateAddPoolCmd) run(cmd *cobra.Command, args []string) error {
 	if err := apc.validate(cmd); err != nil {
 		return errors.Wrap(err, "failed to validate scale command")
 	}
@@ -238,8 +228,13 @@ func (apc *addPoolCmd) run(cmd *cobra.Command, args []string) error {
 		return errors.Wrapf(err, "error generating template %s", apc.apiModelPath)
 	}
 
-	if template, err = transform.PrettyPrintArmTemplate(template); err != nil {
-		return errors.Wrap(err, "error pretty printing template")
+	if !apc.noPrettyPrint {
+		if template, err = transform.PrettyPrintArmTemplate(template); err != nil {
+			return errors.Wrap(err, "error pretty-printing template")
+		}
+		if parameters, err = transform.BuildAzureParametersFile(parameters); err != nil {
+			return errors.Wrap(err, "error pretty-printing template parameters")
+		}
 	}
 
 	templateJSON := make(map[string]interface{})
@@ -272,11 +267,7 @@ func (apc *addPoolCmd) run(cmd *cobra.Command, args []string) error {
 			return errors.Wrapf(err, "error transforming the template for scaling template %s", apc.apiModelPath)
 		}
 	}
-
-	if apc.generate {
-		return apc.saveTemplateFiles(templateJSON, parametersJSON, certsGenerated)
-	} 
-
+	/*
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
 	deploymentSuffix := random.Int31()
 
@@ -299,11 +290,25 @@ func (apc *addPoolCmd) run(cmd *cobra.Command, args []string) error {
 			apc.logger.Warningf("Unable to get nodes in pool %s after scaling:\n", apc.agentPool.Name)
 		}
 	}
+	*/
+	
+	newTemplate, _ := json.MarshalIndent(templateJSON, "", " ")
+	newParameters, _ := json.MarshalIndent(parametersJSON, "", " ")
+
+	writer := &engine.ArtifactWriter{
+		Translator: &i18n.Translator{
+			Locale: apc.locale,
+		},
+	}
+	parametersOnly := false
+	if err = writer.WriteTLSArtifacts(apc.containerService, apc.apiVersion, string(newTemplate), string(newParameters), apc.outputDirectory, certsGenerated, parametersOnly); err != nil {
+		return errors.Wrap(err, "writing artifacts")
+	}
 
 	return apc.saveAPIModel()
 }
 
-func (apc *addPoolCmd) saveAPIModel() error {
+func (apc *generateAddPoolCmd) saveAPIModel() error {
 	var err error
 	apiloader := &api.Apiloader{
 		Translator: &i18n.Translator{
@@ -330,32 +335,4 @@ func (apc *addPoolCmd) saveAPIModel() error {
 	}
 	dir, file := filepath.Split(apc.apiModelPath)
 	return f.SaveFile(dir, file, b)
-}
-
-func (apc *addPoolCmd) saveTemplateFiles(templateJSON, parametersJSON map[string]interface{}, certsGenerated bool) error {
-
-	templateBytes, _ := json.MarshalIndent(templateJSON, "", " ")
-	parametersBytes, _ := json.MarshalIndent(parametersJSON, "", " ")
-
-	writer := &engine.ArtifactWriter{
-		Translator: &i18n.Translator{
-		Locale: apc.locale,
-		},
-	}
-
-	
-	if apc.outputDirectory == "" {
-		if apc.containerService.Properties.MasterProfile != nil {
-			apc.outputDirectory = path.Join("_output", apc.containerService.Properties.MasterProfile.DNSPrefix)
-		} else {
-			apc.outputDirectory = path.Join("_output", apc.containerService.Properties.HostedMasterProfile.DNSPrefix)
-		}
-	}
-
-	parametersOnly := false
-	if err := writer.WriteTLSArtifacts(apc.containerService, apc.apiVersion, string(templateBytes), string(parametersBytes), apc.outputDirectory, certsGenerated, parametersOnly); err != nil {
-		return errors.Wrap(err, "writing artifacts")
-	}
-
-	return apc.saveAPIModel()
 }
