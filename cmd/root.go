@@ -71,7 +71,6 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newScaleCmd())
 	rootCmd.AddCommand(newRotateCertsCmd())
 	rootCmd.AddCommand(newAddPoolCmd())
-	rootCmd.AddCommand(newGenerateAddPoolCmd())
 	rootCmd.AddCommand(getCompletionCmd(rootCmd))
 
 	return rootCmd
